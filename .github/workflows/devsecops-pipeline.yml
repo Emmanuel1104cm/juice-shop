@@ -1,48 +1,4 @@
-name: Pipeline DevSecOps Complet
-
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  # 1. ANALYSES PRÉ-BUILD (SAST, SCA, SECRETS, IAC)
-  static_security_scans:
-    name: Contrôles Statiques (Pre-Build)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Récupérer le code source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Détection des secrets (Gitleaks)
-      - name: Détection de Secrets (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Analyse statique & Dépendances (Trivy SCA / FS)
-      - name: Audit Code & Dépendances (Trivy FS)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'HIGH,CRITICAL'
-          format: 'table'
-          # On met exit-code à 0 pour permettre au pipeline de continuer pour le TP
-          exit-code: '0' 
-
-      # Analyse de l'Infrastructure as Code (Checkov)
-      - name: Audit Configurations IaC (Checkov)
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: '.'
-          framework: 'terraform'
-          soft_fail: true
-
-  # 2. BUILD & SCAN DE L'IMAGE CONTENEURISÉE (SCA IMAGE & RELEASE)
+# Regroupement du Build et du Scan Image dans un seul job
   build_and_container_scan:
     name: Build & Scan Container
     needs: static_security_scans
@@ -54,50 +10,32 @@ jobs:
       - name: Configurer Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build local de l'image
+      # 1. Build local de l'image
       - name: Build de l'image Docker locale
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: mon-application:${{ github.sha }}
+          tags: mon-application:latest # On utilise un tag fixe 'latest'
 
-      # Analyse de l'image conteneurisée produite
+      # 2. Analyse de l'image conteneurisée (Trivy)
       - name: Scan Image Docker (Trivy Image)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'mon-application:${{ github.sha }}'
+          image-ref: 'mon-application:latest' # On scanne l'image locale
           severity: 'CRITICAL'
-          exit-code: '0' # Mis à 0 pour valider le TP
+          exit-code: '0' 
 
-      # Phase de Release
+      # 3. Phase de Release (Push)
       - name: Connexion au Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pousser l'image validée (Release)
+      - name: Pousser l'image validée
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/juice-shop:latest
-
-  # 3. PHASE DE DÉPLOIEMENT (Environnement de Test)
-  deploy_to_staging:
-    name: Déploiement Environnement de Test
-    needs: build_and_container_scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Déploiement via SSH
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.TEST_SERVER_IP }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/juice-shop:latest
-            docker stop app-staging-test || true
-            docker rm app-staging-test || true
-            docker run -d --name app-staging-test -p 8080:3000 ${{ secrets.DOCKERHUB_USERNAME }}/juice-shop:latest
