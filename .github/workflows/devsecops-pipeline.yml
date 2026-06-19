@@ -1,0 +1,84 @@
+name: Pipeline DevSecOps Complet
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # 1. ANALYSES PRÉ-BUILD (SAST, SCA, SECRETS, IAC)
+  static_security_scans:
+    name: Contrôles Statiques (Pre-Build)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Détection des secrets (Gitleaks)
+      - name: Détection de Secrets (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Analyse statique & Dépendances (Trivy SCA / FS)
+      - name: Audit Code & Dépendances (Trivy FS)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+          exit-code: '1' # Bloque le pipeline en cas de faille majeure
+
+      # Analyse de l'Infrastructure as Code (Checkov)
+      - name: Audit Configurations IaC (Checkov)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: '.'
+          framework: 'terraform'
+          soft_fail: true # Optionnel : mis à true pour passer au build si l'IaC est secondaire ici
+
+  # 2. BUILD & SCAN DE L'IMAGE CONTENEURISÉE (SCA IMAGE & RELEASE)
+  build_and_container_scan:
+    name: Build & Scan Container
+    needs: static_security_scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Configurer Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build local de l'image
+      - name: Build de l'image Docker locale
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: juice-shop-local:${{ github.sha }}
+
+      # Analyse de l'image conteneurisée produite
+      - name: Scan Image Docker (Trivy Image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'juice-shop-local:${{ github.sha }}'
+          severity: 'CRITICAL'
+          exit-code: '1'
+
+      # Phase de Release (Si valide, on pousse sur le registre)
+      - name: Connexion au Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pousser l'image validée (Release)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/juice-shop:latest
