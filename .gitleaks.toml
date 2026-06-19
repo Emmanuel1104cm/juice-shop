@@ -1,0 +1,9 @@
+[allowlist]
+description = "Ignore les secrets de test du projet Juice Shop"
+files = [
+    'test/.*',
+    'data/static/users.yml',
+    'frontend/src/app/.*',
+    'lib/insecurity.ts',
+    'routes/login.ts'
+]
